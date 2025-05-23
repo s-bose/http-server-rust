@@ -15,7 +15,7 @@ fn main() {
 fn handle_connection(mut stream: TcpStream) {
     let buffer = BufReader::new(&mut stream);
 
-    let request_lines: Vec<String> = buffer
+    let request_lines: Vec<_> = buffer
         .lines()
         .map(|line| line.unwrap())
         .take_while(|line| !line.is_empty())
