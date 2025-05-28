@@ -3,4 +3,12 @@ name = "http-server-rust"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "http_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "http-server"
+path = "src/main.rs"
+
 [dependencies]
