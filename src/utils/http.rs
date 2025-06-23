@@ -88,25 +88,3 @@ pub fn parse_headers(headers: &str) -> HashMap<&str, &str> {
 
     return headers_dict;
 }
-
-// fn handle_get(path: &str) {}
-// fn handle_post(path: &str) {}
-// fn handle_put(path: &str) {}
-// fn handle_delete(path: &str) {}
-// fn handle_head(path: &str) {}
-// fn handle_options(path: &str) {}
-// fn handle_connect(path: &str) {}
-// fn handle_trace(path: &str) {}
-
-// pub fn dispatch_method(method: &Method, path: &str) -> Option<()> {
-//     match method {
-//         Method::GET => handle_get(path),
-//         Method::POST => handle_post(path),
-//         Method::PUT => handle_put(path),
-//         Method::DELETE => handle_delete(path),
-//         Method::HEAD => handle_head(path),
-//         Method::OPTIONS => handle_options(path),
-//         Method::CONNECT => handle_connect(path),
-//         Method::TRACE => handle_trace(path),
-//     }
-// }

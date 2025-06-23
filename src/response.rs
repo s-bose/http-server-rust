@@ -38,3 +38,23 @@ impl Response {
         response
     }
 }
+
+struct HttpResponse {
+    status_code: u16,
+    status_text: String,
+    version: String,
+    headers: HashMap<String, String>,
+    body: String,
+}
+
+impl HttpResponse {
+    pub fn new(status_code: u16, status_text: &str, version: String, headers: HashMap<String, String>, body: String) -> Self {
+        Self {
+            status_code,
+            status_text: status_text.to_string(),
+            version,
+            headers,
+            body,
+        }
+    }
+}
