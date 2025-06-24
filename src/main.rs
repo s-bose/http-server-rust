@@ -1,3 +1,4 @@
+use http_server::response::HttpResponse;
 use std::io::{BufReader, prelude::*};
 use std::net::TcpListener;
 use std::net::TcpStream;
@@ -22,20 +23,13 @@ fn handle_connection(mut stream: TcpStream) {
         .collect();
 
     if request_lines[0] != "GET / HTTP/1.1" {
-        let status_line = "HTTP/1.1 404 NOT FOUND\r\n";
-        let content = "Not Found";
-        let length = content.len();
-
-        let response = format!("{status_line}Content-Length: {length}\r\n\r\n{content}");
-        stream.write(response.as_bytes()).unwrap();
+        let response =
+            HttpResponse::new(404, "text/plain", "This route does not exist".to_string());
+        stream.write(response.to_string().as_bytes()).unwrap();
         stream.flush().unwrap();
     } else {
-        let status_line = "HTTP/1.1 200 OK\r\n";
-        let content = "Hello, world!";
-        let length = content.len();
-
-        let response = format!("{status_line}Content-Length: {length}\r\n\r\n{content}");
-        stream.write(response.as_bytes()).unwrap();
+        let response = HttpResponse::new(200, "text/plain", "Hello, world!".to_string());
+        stream.write(response.to_string().as_bytes()).unwrap();
         stream.flush().unwrap();
     }
 }

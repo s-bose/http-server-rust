@@ -1,5 +1,4 @@
 use crate::common::{HttpMethod, RouteKey};
-use crate::response::Response;
 use crate::utils::http::Request;
 use std::{collections::HashMap, net::TcpListener, net::TcpStream};
 
@@ -48,7 +47,7 @@ impl Server {
         Ok(())
     }
 
-    pub fn handle_connection(&self, mut stream: TcpStream) {
+    pub fn handle_connection(&self, _: TcpStream) -> () {
         // let request =
     }
 
