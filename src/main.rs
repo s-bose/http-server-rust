@@ -2,7 +2,9 @@ use schnell::response::HttpResponse;
 use schnell::server::Server;
 
 fn main() {
-    let mut server = Server::new("127.0.0.1", 8080);
+    pretty_env_logger::init();
+
+    let mut server = Server::new("127.0.0.1", 8080, None, None);
     server.get("/", |_| {
         HttpResponse::new(200, "text/plain", "Hello, world!".to_string())
     });
@@ -12,5 +14,5 @@ fn main() {
     server.post("/add-todo", |req| {
         HttpResponse::new(200, "text/plain", format!("Todo added: {}", req.body))
     });
-    server.listen().unwrap();
+    server.listen();
 }

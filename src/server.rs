@@ -1,7 +1,10 @@
 use crate::common::{HttpMethod, RouteKey};
 use crate::request::{Request, RequestError};
 use crate::response::HttpResponse;
+use log::info;
+use scoped_threadpool::Pool;
 use std::io::{BufReader, prelude::*};
+use std::time::Duration;
 use std::{collections::HashMap, net::TcpListener, net::TcpStream};
 
 pub type RouteHandler = fn(&Request) -> HttpResponse;
@@ -10,6 +13,8 @@ pub struct Server {
     ip_addr: String,
     port: u16,
     routes: HashMap<RouteKey, RouteHandler>,
+    pool_size: Option<usize>,
+    timeout_ms: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -22,32 +27,28 @@ pub enum ServerError {
 }
 
 impl Server {
-    pub fn new(ip_addr: &str, port: u16) -> Self {
+    pub fn new(
+        ip_addr: &str,
+        port: u16,
+        pool_size: Option<usize>,
+        timeout_ms: Option<u64>,
+    ) -> Self {
         Self {
             ip_addr: ip_addr.to_owned(),
             port,
             routes: HashMap::new(),
+            pool_size,
+            timeout_ms,
         }
     }
 
-    pub fn listen(&self) -> Result<(), ServerError> {
+    pub fn listen(&self) -> ! {
         let listener = TcpListener::bind(format!("{}:{}", self.ip_addr, self.port))
-            .map_err(ServerError::BindError)?;
+            .expect("Error starting server");
 
-        println!("Server listening on {}:{}", self.ip_addr, self.port);
+        info!("Server listening on {}:{}", self.ip_addr, self.port);
 
-        for stream in listener.incoming() {
-            match stream {
-                Ok(stream) => {
-                    self.handle_connection(stream);
-                }
-                Err(e) => {
-                    eprintln!("Error handling connection: {}", e)
-                }
-            }
-        }
-
-        Ok(())
+        self.listen_with_pool(self.pool_size, self.timeout_ms, listener);
     }
 
     pub fn handle_connection(&self, mut stream: TcpStream) {
@@ -62,11 +63,11 @@ impl Server {
                     && !self.routes.contains_key(&route_key);
 
                 let mut response = if method_not_allowed {
-                    HttpResponse::new(405, "text/plain", "Method Not Allowed".to_string())
+                    HttpResponse::new(405, "text/plain")
                 } else if let Some(handler) = self.routes.get(&route_key) {
                     handler(&request)
                 } else {
-                    HttpResponse::new(404, "text/plain", "Not Found".to_string())
+                    HttpResponse::new(404, "text/plain")
                 };
 
                 // Add Connection: close header to ensure clean connection handling
@@ -74,11 +75,42 @@ impl Server {
                 self.write_response(&mut stream, response);
             }
             Err(_) => {
-                let mut error_response =
-                    HttpResponse::new(400, "text/plain", "Bad Request".to_string());
+                let mut error_response = HttpResponse::new(400, "text/plain");
                 error_response.add_header("Connection", "close");
                 self.write_response(&mut stream, error_response)
             }
+        }
+    }
+
+    pub fn listen_with_pool(
+        &self,
+        pool_size: Option<usize>,
+        timeout_ms: Option<u64>,
+        listener: TcpListener,
+    ) -> ! {
+        let logical_cores = num_cpus::get() as u32;
+        let pool_size = pool_size.unwrap_or(logical_cores as usize);
+
+        let mut pool = Pool::new(pool_size as u32);
+        let timeout = Duration::from_millis(timeout_ms.unwrap_or(20));
+
+        let mut incoming = listener.incoming();
+
+        loop {
+            let stream = incoming
+                .next()
+                .unwrap()
+                .expect("Error accepting TCP connection");
+
+            stream
+                .set_read_timeout(Some(timeout))
+                .expect("Error setting read timeout on socket");
+
+            pool.scoped(|scope| {
+                scope.execute(|| {
+                    self.handle_connection(stream);
+                });
+            })
         }
     }
 

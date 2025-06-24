@@ -10,12 +10,12 @@ pub struct HttpResponse {
 }
 
 impl HttpResponse {
-    pub fn new(status_code: u16, content_type: &str, body: String) -> Self {
+    pub fn new(status_code: u16, content_type: &str) -> Self {
         Self {
             status_code,
             content_type: content_type.to_string(),
             headers: HashMap::new(),
-            body,
+            body: String::new(),
             cookies: Vec::new(),
         }
     }
@@ -129,11 +129,18 @@ impl HttpResponse {
         }
     }
 
-    pub fn add_header(&mut self, key: &str, value: &str) {
+    pub fn add_header(&mut self, key: &str, value: &str) -> &mut Self {
         self.headers.insert(key.to_string(), value.to_string());
+        self
     }
 
-    pub fn add_cookie(&mut self, cookie: &str) {
+    pub fn add_cookie(&mut self, cookie: &str) -> &mut Self {
         self.cookies.push(cookie.to_string());
+        self
+    }
+
+    pub fn add_body(&mut self, body: &str) -> &mut Self {
+        self.body = body.to_string();
+        self
     }
 }
