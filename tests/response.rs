@@ -1,4 +1,4 @@
-use http_server::response::HttpResponse;
+use schnell::response::HttpResponse;
 
 #[test]
 fn test_new_response_creation() {

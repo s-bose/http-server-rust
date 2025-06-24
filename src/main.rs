@@ -1,4 +1,4 @@
-use http_server::response::HttpResponse;
+use schnell::response::HttpResponse;
 use std::io::{BufReader, prelude::*};
 use std::net::TcpListener;
 use std::net::TcpStream;

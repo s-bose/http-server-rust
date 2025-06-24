@@ -1,14 +1,14 @@
 [package]
-name = "http-server-rust"
+name = "schnell"
 version = "0.1.0"
 edition = "2024"
 
 [lib]
-name = "http_server"
+name = "schnell"
 path = "src/lib.rs"
 
 [[bin]]
-name = "http-server"
+name = "schnell"
 path = "src/main.rs"
 
 [dependencies]
