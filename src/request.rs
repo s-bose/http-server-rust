@@ -1,6 +1,5 @@
 use std::{
     collections::HashMap,
-    fmt,
     io::{BufRead, BufReader, Error, ErrorKind, Read},
     str::FromStr,
 };

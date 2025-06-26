@@ -67,17 +67,18 @@ impl Server {
 
     pub fn handle_connection(&self, mut stream: TcpStream) {
         let request = match Request::read(BufReader::new(&mut stream)) {
-            Err(RequestError::ReadError(e)) => {
+            Err(
+                RequestError::ReadError(e)
+                | RequestError::ParseError(e)
+                | RequestError::InvalidRequest(e),
+            ) => {
                 error!("Error reading request: {:?}", e);
-                return;
-            }
-            Err(RequestError::InvalidRequest(e)) => {
-                error!("Invalid request: {:?}", e);
+                self.send_response(&mut stream, HttpResponse::internal_server_error());
                 return;
             }
             Err(RequestError::RequestTooLarge) => {
                 error!("Request too large");
-                write_response(&mut stream, HttpResponse::request_entity_too_large()).unwrap();
+                self.send_response(&mut stream, HttpResponse::request_entity_too_large());
                 return;
             }
             Err(RequestError::ConnectionClosed) => {
@@ -85,7 +86,7 @@ impl Server {
                 return;
             }
             Err(RequestError::ConnectionTimedOut) => {
-                info!("Client connection timed out");
+                error!("Client connection timed out");
                 return;
             }
             Ok(request) => request,
@@ -106,16 +107,11 @@ impl Server {
 
         match response {
             Ok(response) => {
-                if let Err(err) = write_response(&mut stream, response) {
-                    error!("Error writing response: {:?}", err);
-                }
+                self.send_response(&mut stream, response);
             }
             Err(err) => {
                 error!("Error writing response: {:?}", err);
-                if let Err(err) = write_response(&mut stream, HttpResponse::internal_server_error())
-                {
-                    error!("Error writing error response: {:?}", err);
-                }
+                self.send_response(&mut stream, HttpResponse::internal_server_error());
             }
         }
     }
@@ -136,12 +132,12 @@ impl Server {
 
             if let Err(e) = stream.set_read_timeout(self.read_timeout_ms) {
                 error!("Error setting read timeout: {:?}", e);
-                write_response(&mut stream, HttpResponse::internal_server_error()).unwrap();
+                self.send_response(&mut stream, HttpResponse::internal_server_error());
             }
 
             if let Err(e) = stream.set_write_timeout(self.write_timeout_ms) {
                 error!("Error setting write timeout: {:?}", e);
-                write_response(&mut stream, HttpResponse::internal_server_error()).unwrap();
+                self.send_response(&mut stream, HttpResponse::internal_server_error());
             }
 
             pool.scoped(|scope| {
@@ -187,6 +183,12 @@ impl Server {
             println!("Route already exists: {:?}", key);
         } else {
             self.routes.insert(key, handler);
+        }
+    }
+
+    fn send_response(&self, stream: &mut TcpStream, response: HttpResponse) {
+        if let Err(err) = write_response(stream, response) {
+            error!("Error writing response: {:?}", err);
         }
     }
 }
