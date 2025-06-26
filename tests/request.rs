@@ -1,6 +1,5 @@
-use schnell::common::HttpMethod;
-use schnell::request::Request;
-use schnell::utils::http::Version;
+use schnell::common::{HttpMethod, Version};
+use schnell::request::{Request, RequestError};
 use std::io::BufReader;
 
 #[test]
@@ -9,7 +8,7 @@ fn test_from_stream_get_request() {
         "GET /index.html HTTP/1.1\r\nHost: localhost:8080\r\nUser-Agent: test-client/1.0\r\n\r\n";
     let buffer = BufReader::new(request_data.as_bytes());
 
-    let result = Request::from_stream(buffer);
+    let result = Request::read(buffer);
     assert!(result.is_ok());
 
     let request = result.unwrap();
@@ -37,7 +36,7 @@ fn test_from_stream_post_request_with_body() {
     );
     let buffer = BufReader::new(request_data.as_bytes());
 
-    let result = Request::from_stream(buffer);
+    let result = Request::read(buffer);
     assert!(result.is_ok());
 
     let request = result.unwrap();
@@ -64,7 +63,7 @@ fn test_from_stream_multiple_headers() {
     let request_data = "GET /test HTTP/1.1\r\nHost: example.com\r\nUser-Agent: Mozilla/5.0\r\nAccept: text/html\r\nAccept-Language: en-US\r\n\r\n";
     let buffer = BufReader::new(request_data.as_bytes());
 
-    let result = Request::from_stream(buffer);
+    let result = Request::read(buffer);
     assert!(result.is_ok());
 
     let request = result.unwrap();
@@ -94,8 +93,13 @@ fn test_from_stream_empty_request() {
     let request_data = "";
     let buffer = BufReader::new(request_data.as_bytes());
 
-    let result = Request::from_stream(buffer);
+    let result = Request::read(buffer);
     assert!(result.is_err());
+
+    match result.unwrap_err() {
+        RequestError::ConnectionClosed => {} // Expected
+        other => panic!("Expected ConnectionClosed, got {:?}", other),
+    }
 }
 
 #[test]
@@ -103,7 +107,7 @@ fn test_from_stream_invalid_request_line() {
     let request_data = "INVALID REQUEST LINE\r\n\r\n";
     let buffer = BufReader::new(request_data.as_bytes());
 
-    let result = Request::from_stream(buffer);
+    let result = Request::read(buffer);
     assert!(result.is_err());
 }
 
@@ -112,7 +116,7 @@ fn test_from_stream_invalid_method() {
     let request_data = "INVALID /test HTTP/1.1\r\nHost: localhost\r\n\r\n";
     let buffer = BufReader::new(request_data.as_bytes());
 
-    let result = Request::from_stream(buffer);
+    let result = Request::read(buffer);
     assert!(result.is_err());
 }
 
@@ -121,7 +125,7 @@ fn test_from_stream_invalid_version() {
     let request_data = "GET /test HTTP/3.0\r\nHost: localhost\r\n\r\n";
     let buffer = BufReader::new(request_data.as_bytes());
 
-    let result = Request::from_stream(buffer);
+    let result = Request::read(buffer);
     assert!(result.is_err());
 }
 
@@ -130,7 +134,7 @@ fn test_from_stream_headers_case_insensitive() {
     let request_data = "GET /test HTTP/1.1\r\nHOST: localhost\r\nContent-TYPE: text/plain\r\n\r\n";
     let buffer = BufReader::new(request_data.as_bytes());
 
-    let result = Request::from_stream(buffer);
+    let result = Request::read(buffer);
     assert!(result.is_ok());
 
     let request = result.unwrap();
@@ -146,7 +150,7 @@ fn test_from_stream_body_with_zero_content_length() {
     let request_data = "POST /test HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n";
     let buffer = BufReader::new(request_data.as_bytes());
 
-    let result = Request::from_stream(buffer);
+    let result = Request::read(buffer);
     assert!(result.is_ok());
 
     let request = result.unwrap();
@@ -169,7 +173,7 @@ fn test_from_stream_various_methods() {
         let request_data = format!("{} /test HTTP/1.1\r\nHost: localhost\r\n\r\n", method_str);
         let buffer = BufReader::new(request_data.as_bytes());
 
-        let result = Request::from_stream(buffer);
+        let result = Request::read(buffer);
         assert!(result.is_ok());
 
         let request = result.unwrap();
@@ -177,4 +181,50 @@ fn test_from_stream_various_methods() {
         assert_eq!(request.path, "/test");
         assert_eq!(request.version, Version::HTTP1_1);
     }
+}
+
+#[test]
+fn test_connection_closed_during_headers() {
+    // Test connection closed after partial header reading
+    let request_data = "GET /test HTTP/1.1\r\nHost: localhost\r\n"; // Missing final \r\n
+    let buffer = BufReader::new(request_data.as_bytes());
+
+    let result = Request::read(buffer);
+    // This should still parse successfully as we have complete headers
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_error_display_messages() {
+    let connection_closed = RequestError::ConnectionClosed;
+    let connection_timeout = RequestError::ConnectionTimedOut;
+    let request_too_large = RequestError::RequestTooLarge;
+
+    assert_eq!(
+        connection_closed.to_string(),
+        "Client connection was closed unexpectedly"
+    );
+    assert_eq!(
+        connection_timeout.to_string(),
+        "Client connection timed out"
+    );
+    assert_eq!(
+        request_too_large.to_string(),
+        "Request exceeds maximum allowed size"
+    );
+}
+
+#[test]
+fn test_error_source_chain() {
+    use std::error::Error;
+
+    let io_error = std::io::Error::new(std::io::ErrorKind::BrokenPipe, "Connection broken");
+    let read_error = RequestError::ReadError(io_error);
+
+    // Test that ReadError preserves the source error
+    assert!(read_error.source().is_some());
+
+    // Test that ConnectionClosed has no source
+    let connection_closed = RequestError::ConnectionClosed;
+    assert!(connection_closed.source().is_none());
 }

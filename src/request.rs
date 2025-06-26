@@ -1,20 +1,23 @@
 use std::{
     collections::HashMap,
-    io::{BufRead, BufReader, Read},
+    fmt,
+    io::{BufRead, BufReader, Error, ErrorKind, Read},
     str::FromStr,
 };
 
-use crate::{
-    common::{HttpMethod, RoutePath},
-    utils::http::Version,
-};
+use crate::common::{HttpMethod, RoutePath, Version};
 
 #[derive(Debug)]
 pub enum RequestError {
-    ReadError(std::io::Error),
-    InvalidRequest(std::io::Error),
+    ReadError(Error),
+    InvalidRequest(Error),
+    RequestTooLarge,
+    ConnectionClosed,
+    ConnectionTimedOut,
+    ParseError(Error),
 }
 
+#[derive(Debug)]
 pub struct Request {
     pub method: HttpMethod,
     pub path: RoutePath,
@@ -24,27 +27,56 @@ pub struct Request {
 }
 
 impl Request {
-    pub fn from_stream<R: Read>(mut buffer: BufReader<R>) -> Result<Self, RequestError> {
+    pub fn read<R: Read>(
+        mut buffer: BufReader<R>,
+        // timeout: Option<Duration>,
+    ) -> Result<Self, RequestError> {
+        // let timeout = timeout.unwrap_or(Duration::from_secs(10));
         // Parse request line and headers (until empty line)
         let mut lines = Vec::new();
         let mut line = String::new();
-        while buffer
-            .read_line(&mut line)
-            .map_err(RequestError::ReadError)?
-            > 0
-        {
-            if line.trim().is_empty() {
-                break; // End of headers
+
+        loop {
+            match buffer.read_line(&mut line) {
+                Ok(0) => {
+                    // End of stream reached
+                    if lines.is_empty() {
+                        return Err(RequestError::ConnectionClosed);
+                    }
+                    break;
+                }
+                Ok(_) => {
+                    if line.trim().is_empty() {
+                        break; // End of headers
+                    }
+                    lines.push(line.trim().to_string());
+                    line.clear();
+                }
+                Err(e) => match e.kind() {
+                    std::io::ErrorKind::UnexpectedEof => {
+                        return Err(RequestError::ConnectionClosed);
+                    }
+                    std::io::ErrorKind::TimedOut => {
+                        return Err(RequestError::ConnectionTimedOut);
+                    }
+                    std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::BrokenPipe => {
+                        return Err(RequestError::ConnectionClosed);
+                    }
+                    _ => {
+                        return Err(RequestError::ReadError(e));
+                    }
+                },
             }
-            lines.push(line.trim().to_string());
-            line.clear();
         }
 
         if lines.is_empty() {
-            return Err(RequestError::InvalidRequest(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "Connection closed or empty request",
-            )));
+            return Err(RequestError::ConnectionClosed);
+        }
+
+        if buffer.buffer().len() > 1024 * 1024 * 10 {
+            return Err(RequestError::RequestTooLarge);
         }
 
         // Parse request line
@@ -68,24 +100,18 @@ impl Request {
     fn parse_request_line(line: &str) -> Result<(HttpMethod, String, Version), RequestError> {
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.len() != 3 {
-            return Err(RequestError::InvalidRequest(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
+            return Err(RequestError::ParseError(Error::new(
+                ErrorKind::InvalidData,
                 "Invalid request line",
             )));
         }
 
         let method = HttpMethod::from_str(parts[0]).ok_or({
-            RequestError::InvalidRequest(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Invalid HTTP method",
-            ))
+            RequestError::ParseError(Error::new(ErrorKind::InvalidData, "Invalid HTTP method"))
         })?;
 
         let version = Version::from_str(parts[2]).map_err(|_| {
-            RequestError::InvalidRequest(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "Invalid HTTP version",
-            ))
+            RequestError::InvalidRequest(Error::new(ErrorKind::InvalidData, "Invalid HTTP version"))
         })?;
 
         Ok((method, parts[1].to_string(), version))
@@ -115,13 +141,29 @@ impl Request {
         }
 
         let mut body = vec![0; content_length];
-        buffer
-            .read_exact(&mut body)
-            .map_err(RequestError::ReadError)?;
+        match buffer.read_exact(&mut body) {
+            Ok(()) => {}
+            Err(e) => match e.kind() {
+                ErrorKind::UnexpectedEof => {
+                    return Err(RequestError::ConnectionClosed);
+                }
+                ErrorKind::TimedOut => {
+                    return Err(RequestError::ConnectionTimedOut);
+                }
+                ErrorKind::ConnectionReset
+                | ErrorKind::ConnectionAborted
+                | ErrorKind::BrokenPipe => {
+                    return Err(RequestError::ConnectionClosed);
+                }
+                _ => {
+                    return Err(RequestError::ReadError(e));
+                }
+            },
+        }
 
         String::from_utf8(body).map_err(|_| {
-            RequestError::InvalidRequest(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
+            RequestError::ParseError(Error::new(
+                ErrorKind::InvalidData,
                 "Invalid UTF-8 in request body",
             ))
         })

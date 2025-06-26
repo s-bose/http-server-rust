@@ -1,45 +1,59 @@
 use crate::common::{HttpMethod, RouteKey};
 use crate::request::{Request, RequestError};
-use crate::response::HttpResponse;
-use log::info;
+use crate::response::{HttpResponse, write_response};
+use std::io::Result;
+
+use log::{error, info};
 use scoped_threadpool::Pool;
-use std::io::{BufReader, prelude::*};
+use std::io::BufReader;
 use std::time::Duration;
 use std::{collections::HashMap, net::TcpListener, net::TcpStream};
 
-pub type RouteHandler = fn(&Request) -> HttpResponse;
+pub type RouteHandler = fn(&Request) -> Result<HttpResponse>;
 
 pub struct Server {
     ip_addr: String,
     port: u16,
     routes: HashMap<RouteKey, RouteHandler>,
     pool_size: Option<usize>,
-    timeout_ms: Option<u64>,
+    read_timeout_ms: Option<Duration>,
+    write_timeout_ms: Option<Duration>,
 }
 
 #[derive(Debug)]
 pub enum ServerError {
-    BindError(std::io::Error),
-    RequestParseError(RequestError),
-    ResponseWriteError(std::io::Error),
-    RouteNotFound(RouteKey),
-    MethodNotAllowed(RouteKey),
+    ResponseError(std::io::Error),
 }
 
 impl Server {
-    pub fn new(
-        ip_addr: &str,
-        port: u16,
-        pool_size: Option<usize>,
-        timeout_ms: Option<u64>,
-    ) -> Self {
+    pub fn new(ip_addr: &str, port: u16, pool_size: Option<usize>) -> Self {
         Self {
             ip_addr: ip_addr.to_owned(),
             port,
             routes: HashMap::new(),
             pool_size,
-            timeout_ms,
+            read_timeout_ms: Some(Duration::from_millis(100_000)),
+            write_timeout_ms: Some(Duration::from_millis(100_000)),
         }
+    }
+
+    pub fn with_read_timeout(self, timeout_ms: Duration) -> Self {
+        let mut server = self;
+        server.read_timeout_ms = Some(timeout_ms);
+        server
+    }
+
+    pub fn with_write_timeout(self, timeout_ms: Duration) -> Self {
+        let mut server = self;
+        server.write_timeout_ms = Some(timeout_ms);
+        server
+    }
+
+    pub fn with_timeout(self, timeout_ms: Duration) -> Self {
+        let mut server = self;
+        server.read_timeout_ms = Some(timeout_ms);
+        server.write_timeout_ms = Some(timeout_ms);
+        server
     }
 
     pub fn listen(&self) -> ! {
@@ -48,63 +62,87 @@ impl Server {
 
         info!("Server listening on {}:{}", self.ip_addr, self.port);
 
-        self.listen_with_pool(self.pool_size, self.timeout_ms, listener);
+        self.listen_with_pool(self.pool_size, listener);
     }
 
     pub fn handle_connection(&self, mut stream: TcpStream) {
-        let buffer = BufReader::new(&mut stream);
-        let request = Request::from_stream(buffer);
-
-        match request {
-            Ok(request) => {
-                // Check if route exists but method is different
-                let route_key = (request.method.clone(), request.path.clone());
-                let method_not_allowed = self.routes.keys().any(|(_, path)| path == &request.path)
-                    && !self.routes.contains_key(&route_key);
-
-                let mut response = if method_not_allowed {
-                    HttpResponse::new(405, "text/plain")
-                } else if let Some(handler) = self.routes.get(&route_key) {
-                    handler(&request)
-                } else {
-                    HttpResponse::new(404, "text/plain")
-                };
-
-                // Add Connection: close header to ensure clean connection handling
-                response.add_header("Connection", "close");
-                self.write_response(&mut stream, response);
+        let request = match Request::read(BufReader::new(&mut stream)) {
+            Err(RequestError::ReadError(e)) => {
+                error!("Error reading request: {:?}", e);
+                return;
             }
-            Err(_) => {
-                let mut error_response = HttpResponse::new(400, "text/plain");
-                error_response.add_header("Connection", "close");
-                self.write_response(&mut stream, error_response)
+            Err(RequestError::InvalidRequest(e)) => {
+                error!("Invalid request: {:?}", e);
+                return;
+            }
+            Err(RequestError::RequestTooLarge) => {
+                error!("Request too large");
+                write_response(&mut stream, HttpResponse::request_entity_too_large()).unwrap();
+                return;
+            }
+            Err(RequestError::ConnectionClosed) => {
+                info!("Client connection closed");
+                return;
+            }
+            Err(RequestError::ConnectionTimedOut) => {
+                info!("Client connection timed out");
+                return;
+            }
+            Ok(request) => request,
+        };
+
+        // Check if route exists but method is different
+        let route_key = (request.method.clone(), request.path.clone());
+        let method_not_allowed = self.routes.keys().any(|(_, path)| path == &request.path)
+            && !self.routes.contains_key(&route_key);
+
+        let response = if method_not_allowed {
+            Ok(HttpResponse::method_not_allowed())
+        } else if let Some(handler) = self.routes.get(&route_key) {
+            handler(&request)
+        } else {
+            Ok(HttpResponse::not_found())
+        };
+
+        match response {
+            Ok(response) => {
+                if let Err(err) = write_response(&mut stream, response) {
+                    error!("Error writing response: {:?}", err);
+                }
+            }
+            Err(err) => {
+                error!("Error writing response: {:?}", err);
+                if let Err(err) = write_response(&mut stream, HttpResponse::internal_server_error())
+                {
+                    error!("Error writing error response: {:?}", err);
+                }
             }
         }
     }
 
-    pub fn listen_with_pool(
-        &self,
-        pool_size: Option<usize>,
-        timeout_ms: Option<u64>,
-        listener: TcpListener,
-    ) -> ! {
+    pub fn listen_with_pool(&self, pool_size: Option<usize>, listener: TcpListener) -> ! {
         let logical_cores = num_cpus::get() as u32;
         let pool_size = pool_size.unwrap_or(logical_cores as usize);
 
         let mut pool = Pool::new(pool_size as u32);
-        let timeout = Duration::from_millis(timeout_ms.unwrap_or(20));
 
         let mut incoming = listener.incoming();
 
         loop {
-            let stream = incoming
+            let mut stream = incoming
                 .next()
                 .unwrap()
                 .expect("Error accepting TCP connection");
 
-            stream
-                .set_read_timeout(Some(timeout))
-                .expect("Error setting read timeout on socket");
+            if let Err(e) = stream.set_read_timeout(self.read_timeout_ms) {
+                error!("Error setting read timeout: {:?}", e);
+                write_response(&mut stream, HttpResponse::internal_server_error()).unwrap();
+            }
+
+            if let Err(e) = stream.set_write_timeout(self.write_timeout_ms) {
+                error!("Error setting write timeout: {:?}", e);
+                write_response(&mut stream, HttpResponse::internal_server_error()).unwrap();
+            }
 
             pool.scoped(|scope| {
                 scope.execute(|| {
@@ -112,11 +150,6 @@ impl Server {
                 });
             })
         }
-    }
-
-    fn write_response(&self, stream: &mut TcpStream, response: HttpResponse) {
-        stream.write_all(response.to_string().as_bytes()).unwrap();
-        stream.flush().unwrap();
     }
 
     pub fn get(&mut self, path: &str, handler: RouteHandler) {
