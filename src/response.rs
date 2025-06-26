@@ -1,5 +1,9 @@
 use crate::constants::HTTP_VERSION;
+use serde::Serialize;
 use std::collections::HashMap;
+use std::io::Result;
+use std::io::Write;
+use std::net::TcpStream;
 
 pub struct HttpResponse {
     pub status_code: u16,
@@ -10,12 +14,12 @@ pub struct HttpResponse {
 }
 
 impl HttpResponse {
-    pub fn new(status_code: u16, content_type: &str, body: String) -> Self {
+    pub fn new(status_code: u16) -> Self {
         Self {
             status_code,
-            content_type: content_type.to_string(),
+            content_type: String::from("text/plain"),
             headers: HashMap::new(),
-            body,
+            body: String::new(),
             cookies: Vec::new(),
         }
     }
@@ -129,11 +133,137 @@ impl HttpResponse {
         }
     }
 
-    pub fn add_header(&mut self, key: &str, value: &str) {
-        self.headers.insert(key.to_string(), value.to_string());
+    pub fn with_header(self, key: &str, value: &str) -> Self {
+        let mut new_response = self;
+        new_response
+            .headers
+            .insert(key.to_string(), value.to_string());
+        new_response
     }
 
-    pub fn add_cookie(&mut self, cookie: &str) {
-        self.cookies.push(cookie.to_string());
+    /// Set multiple headers at once
+    pub fn with_headers(self, headers: Vec<(&str, &str)>) -> Self {
+        let mut new_response = self;
+        for (key, value) in headers {
+            new_response
+                .headers
+                .insert(key.to_string(), value.to_string());
+        }
+        new_response
     }
+
+    pub fn with_content_type(self, content_type: &str) -> Self {
+        let mut new_response = self;
+        new_response.content_type = content_type.to_string();
+        new_response
+    }
+
+    /// Utility fns for different content types
+    pub fn json<T: Serialize>(self, body: T) -> Self {
+        let mut new_response = self;
+        new_response.content_type = String::from("application/json");
+        new_response.body = serde_json::to_string(&body).unwrap();
+        new_response
+    }
+
+    /// plaintext content type
+    pub fn text(self, body: &str) -> Self {
+        let mut new_response = self;
+        new_response.content_type = String::from("text/plain");
+        new_response.body = body.to_string();
+        new_response
+    }
+
+    /// html content type
+    pub fn html(self, body: &str) -> Self {
+        let mut new_response = self;
+        new_response.content_type = String::from("text/html");
+        new_response.body = body.to_string();
+        new_response
+    }
+
+    pub fn with_cookie(self, cookie: &str) -> Self {
+        let mut new_response = self;
+        new_response.cookies.push(cookie.to_string());
+        new_response
+    }
+
+    /// Add multiple cookies at once
+    pub fn with_cookies(self, cookies: Vec<&str>) -> Self {
+        let mut new_response = self;
+        for cookie in cookies {
+            new_response.cookies.push(cookie.to_string());
+        }
+        new_response
+    }
+
+    // any str body
+    pub fn with_body(self, body: &str) -> Self {
+        let mut new_response = self;
+        new_response.body = body.to_string();
+        new_response
+    }
+
+    /// Set the status code after creation
+    pub fn with_status(self, status_code: u16) -> Self {
+        let mut new_response = self;
+        new_response.status_code = status_code;
+        new_response
+    }
+
+    pub fn ok() -> Self {
+        Self::new(200)
+    }
+
+    pub fn created() -> Self {
+        Self::new(201)
+    }
+
+    pub fn not_found() -> Self {
+        Self::new(404)
+    }
+
+    pub fn bad_request() -> Self {
+        Self::new(400)
+    }
+
+    pub fn unauthorized() -> Self {
+        Self::new(401)
+    }
+
+    pub fn forbidden() -> Self {
+        Self::new(403)
+    }
+
+    pub fn method_not_allowed() -> Self {
+        Self::new(405)
+    }
+
+    pub fn internal_server_error() -> Self {
+        Self::new(500)
+    }
+
+    pub fn bad_gateway() -> Self {
+        Self::new(502)
+    }
+
+    pub fn request_entity_too_large() -> Self {
+        Self::new(413)
+    }
+}
+
+pub fn write_response(stream: &mut TcpStream, response: HttpResponse) -> Result<()> {
+    stream.write_all(response.to_string().as_bytes())?;
+
+    stream.flush()?;
+    Ok(())
+}
+
+#[macro_export]
+macro_rules! send_response {
+    ($stream:expr, $response:expr) => {
+        if let Err(err) = write_response($stream, $response) {
+            error!("Error writing response: {:?}", err);
+        }
+    };
 }

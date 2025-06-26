@@ -1,37 +1,170 @@
 use std::{
     collections::HashMap,
-    io::{BufRead, BufReader},
-    net::TcpStream,
+    io::{BufRead, BufReader, Error, ErrorKind, Read},
+    str::FromStr,
 };
 
-use crate::utils::http::{Method, Version};
+use crate::common::{HttpMethod, RoutePath, Version};
 
 #[derive(Debug)]
 pub enum RequestError {
-    ReadError(std::io::Error),
-    InvalidRequest(std::io::Error),
+    ReadError(Error),
+    InvalidRequest(Error),
+    RequestTooLarge,
+    ConnectionClosed,
+    ConnectionTimedOut,
+    ParseError(Error),
 }
 
+#[derive(Debug)]
 pub struct Request {
-    method: Method,
-    path: String,
-    version: Version,
-    headers: HashMap<String, String>,
-    body: String,
+    pub method: HttpMethod,
+    pub path: RoutePath,
+    pub version: Version,
+    pub headers: HashMap<String, String>,
+    pub body: String,
 }
 
 impl Request {
-    pub fn from_stream(&self, stream: &mut TcpStream) -> Result<(), RequestError> {
-        let buffer = BufReader::new(stream);
-        let mut lines: Vec<_> = buffer
-            .lines()
-            .map(|line| line.unwrap())
-            .take_while(|line| !line.is_empty())
-            .collect();
+    pub fn read<R: Read>(
+        mut buffer: BufReader<R>,
+        // timeout: Option<Duration>,
+    ) -> Result<Self, RequestError> {
+        // let timeout = timeout.unwrap_or(Duration::from_secs(10));
+        // Parse request line and headers (until empty line)
+        let mut lines = Vec::new();
+        let mut line = String::new();
+
+        loop {
+            match buffer.read_line(&mut line) {
+                Ok(0) => {
+                    // End of stream reached
+                    if lines.is_empty() {
+                        return Err(RequestError::ConnectionClosed);
+                    }
+                    break;
+                }
+                Ok(_) => {
+                    if line.trim().is_empty() {
+                        break; // End of headers
+                    }
+                    lines.push(line.trim().to_string());
+                    line.clear();
+                }
+                Err(e) => match e.kind() {
+                    std::io::ErrorKind::UnexpectedEof => {
+                        return Err(RequestError::ConnectionClosed);
+                    }
+                    std::io::ErrorKind::TimedOut => {
+                        return Err(RequestError::ConnectionTimedOut);
+                    }
+                    std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::BrokenPipe => {
+                        return Err(RequestError::ConnectionClosed);
+                    }
+                    _ => {
+                        return Err(RequestError::ReadError(e));
+                    }
+                },
+            }
+        }
 
         if lines.is_empty() {
-            return Err(RequestError::EmptyRequest.into());
+            return Err(RequestError::ConnectionClosed);
         }
-        Ok(())
+
+        if buffer.buffer().len() > 1024 * 1024 * 10 {
+            return Err(RequestError::RequestTooLarge);
+        }
+
+        // Parse request line
+        let (method, path, version) = Self::parse_request_line(&lines[0])?;
+
+        // Parse headers
+        let headers = Self::parse_headers(&lines[1..]);
+
+        // Parse body (read remaining content)
+        let body = Self::parse_body(&mut buffer, &headers)?;
+
+        Ok(Request {
+            method,
+            path,
+            version,
+            headers,
+            body,
+        })
+    }
+
+    fn parse_request_line(line: &str) -> Result<(HttpMethod, String, Version), RequestError> {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() != 3 {
+            return Err(RequestError::ParseError(Error::new(
+                ErrorKind::InvalidData,
+                "Invalid request line",
+            )));
+        }
+
+        let method = HttpMethod::from_str(parts[0]).ok_or({
+            RequestError::ParseError(Error::new(ErrorKind::InvalidData, "Invalid HTTP method"))
+        })?;
+
+        let version = Version::from_str(parts[2]).map_err(|_| {
+            RequestError::InvalidRequest(Error::new(ErrorKind::InvalidData, "Invalid HTTP version"))
+        })?;
+
+        Ok((method, parts[1].to_string(), version))
+    }
+
+    fn parse_headers(lines: &[String]) -> HashMap<String, String> {
+        let mut headers = HashMap::new();
+        for line in lines {
+            if let Some((key, value)) = line.split_once(':') {
+                headers.insert(key.trim().to_lowercase(), value.trim().to_string());
+            }
+        }
+        headers
+    }
+
+    fn parse_body<R: Read>(
+        buffer: &mut BufReader<R>,
+        headers: &HashMap<String, String>,
+    ) -> Result<String, RequestError> {
+        let content_length = headers
+            .get("content-length")
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(0);
+
+        if content_length == 0 {
+            return Ok(String::new());
+        }
+
+        let mut body = vec![0; content_length];
+        match buffer.read_exact(&mut body) {
+            Ok(()) => {}
+            Err(e) => match e.kind() {
+                ErrorKind::UnexpectedEof => {
+                    return Err(RequestError::ConnectionClosed);
+                }
+                ErrorKind::TimedOut => {
+                    return Err(RequestError::ConnectionTimedOut);
+                }
+                ErrorKind::ConnectionReset
+                | ErrorKind::ConnectionAborted
+                | ErrorKind::BrokenPipe => {
+                    return Err(RequestError::ConnectionClosed);
+                }
+                _ => {
+                    return Err(RequestError::ReadError(e));
+                }
+            },
+        }
+
+        String::from_utf8(body).map_err(|_| {
+            RequestError::ParseError(Error::new(
+                ErrorKind::InvalidData,
+                "Invalid UTF-8 in request body",
+            ))
+        })
     }
 }

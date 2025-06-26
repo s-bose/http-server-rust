@@ -1,35 +1,40 @@
 use schnell::response::HttpResponse;
-use std::io::{BufReader, prelude::*};
-use std::net::TcpListener;
-use std::net::TcpStream;
+use schnell::server::Server;
+use serde::Serialize;
 
-fn main() {
-    let tcp_listener = TcpListener::bind("127.0.0.1:8080").unwrap();
-    for stream in tcp_listener.incoming() {
-        let stream = stream.unwrap();
-        println!("Connection established!");
-
-        handle_connection(stream);
-    }
+#[derive(Serialize)]
+struct Todo {
+    id: u32,
+    title: String,
+    completed: bool,
 }
 
-fn handle_connection(mut stream: TcpStream) {
-    let buffer = BufReader::new(&mut stream);
+fn main() {
+    pretty_env_logger::init();
 
-    let request_lines: Vec<_> = buffer
-        .lines()
-        .map(|line| line.unwrap())
-        .take_while(|line| !line.is_empty())
-        .collect();
-
-    if request_lines[0] != "GET / HTTP/1.1" {
-        let response =
-            HttpResponse::new(404, "text/plain", "This route does not exist".to_string());
-        stream.write(response.to_string().as_bytes()).unwrap();
-        stream.flush().unwrap();
-    } else {
-        let response = HttpResponse::new(200, "text/plain", "Hello, world!".to_string());
-        stream.write(response.to_string().as_bytes()).unwrap();
-        stream.flush().unwrap();
-    }
+    let mut server = Server::new("127.0.0.1", 8080, None);
+    server.get("/", |_| {
+        Ok(HttpResponse::ok().html("<h1>Hello, world!</h1>"))
+    });
+    server.get("/about", |_| {
+        Ok(HttpResponse::ok().html("<h1>About page</h1>"))
+    });
+    server.post("/add-todo", |req| {
+        Ok(HttpResponse::ok().text(&format!("Todo added: {}", req.body)))
+    });
+    server.get("/todos", |_| {
+        Ok(HttpResponse::ok().json(vec![
+            Todo {
+                id: 1,
+                title: "Buy groceries".to_string(),
+                completed: false,
+            },
+            Todo {
+                id: 2,
+                title: "Buy groceries".to_string(),
+                completed: false,
+            },
+        ]))
+    });
+    server.listen();
 }
