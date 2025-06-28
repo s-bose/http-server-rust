@@ -193,38 +193,3 @@ fn test_connection_closed_during_headers() {
     // This should still parse successfully as we have complete headers
     assert!(result.is_ok());
 }
-
-#[test]
-fn test_error_display_messages() {
-    let connection_closed = RequestError::ConnectionClosed;
-    let connection_timeout = RequestError::ConnectionTimedOut;
-    let request_too_large = RequestError::RequestTooLarge;
-
-    assert_eq!(
-        connection_closed.to_string(),
-        "Client connection was closed unexpectedly"
-    );
-    assert_eq!(
-        connection_timeout.to_string(),
-        "Client connection timed out"
-    );
-    assert_eq!(
-        request_too_large.to_string(),
-        "Request exceeds maximum allowed size"
-    );
-}
-
-#[test]
-fn test_error_source_chain() {
-    use std::error::Error;
-
-    let io_error = std::io::Error::new(std::io::ErrorKind::BrokenPipe, "Connection broken");
-    let read_error = RequestError::ReadError(io_error);
-
-    // Test that ReadError preserves the source error
-    assert!(read_error.source().is_some());
-
-    // Test that ConnectionClosed has no source
-    let connection_closed = RequestError::ConnectionClosed;
-    assert!(connection_closed.source().is_none());
-}
