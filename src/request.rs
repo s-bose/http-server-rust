@@ -23,15 +23,12 @@ pub struct Request {
     pub version: Version,
     pub headers: HashMap<String, String>,
     pub body: String,
+    pub params: HashMap<String, String>,
+    pub query: HashMap<String, String>,
 }
 
 impl Request {
-    pub fn read<R: Read>(
-        mut buffer: BufReader<R>,
-        // timeout: Option<Duration>,
-    ) -> Result<Self, RequestError> {
-        // let timeout = timeout.unwrap_or(Duration::from_secs(10));
-        // Parse request line and headers (until empty line)
+    pub fn read<R: Read>(mut buffer: BufReader<R>) -> Result<Self, RequestError> {
         let mut lines = Vec::new();
         let mut line = String::new();
 
@@ -87,13 +84,25 @@ impl Request {
         // Parse body (read remaining content)
         let body = Self::parse_body(&mut buffer, &headers)?;
 
+        let (path, query) = Self::extract_query(&path);
+
         Ok(Request {
             method,
-            path,
+            path: path.to_string(),
             version,
             headers,
             body,
+            params: HashMap::new(),
+            query: Self::parse_query(query),
         })
+    }
+
+    pub fn query_param(&self, key: &str) -> Option<&str> {
+        self.query.get(key).map(|v| v.as_str())
+    }
+
+    pub fn query_param_or<'a>(&'a self, key: &str, default: &'a str) -> &'a str {
+        self.query_param(key).unwrap_or(default)
     }
 
     fn parse_request_line(line: &str) -> Result<(HttpMethod, String, Version), RequestError> {
@@ -124,6 +133,20 @@ impl Request {
             }
         }
         headers
+    }
+
+    fn extract_query(url: &str) -> (&str, &str) {
+        url.split_once('?').unwrap_or((url, ""))
+    }
+
+    fn parse_query(url: &str) -> HashMap<String, String> {
+        let mut query_map = HashMap::new();
+        for pair in url.split('&') {
+            let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+            query_map.insert(key.to_string(), value.to_string());
+        }
+
+        query_map
     }
 
     fn parse_body<R: Read>(

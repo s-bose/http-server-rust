@@ -22,6 +22,10 @@ fn main() {
     server.post("/add-todo", |req| {
         Ok(HttpResponse::ok().text(&format!("Todo added: {}", req.body)))
     });
+    server.get("/users", |req| {
+        let name = req.query_param_or("name", "Bob");
+        Ok(HttpResponse::ok().text(&format!("Usersname: {:?}", name)))
+    });
     server.get("/todos", |_| {
         Ok(HttpResponse::ok().json(vec![
             Todo {
