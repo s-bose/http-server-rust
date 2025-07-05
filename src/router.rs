@@ -9,8 +9,8 @@ pub struct Router {
 }
 
 pub struct RouteGroup<'a> {
-    prefix: String,
-    routes: &'a mut Vec<Route>,
+    pub prefix: String,
+    pub routes: &'a mut Vec<Route>,
 }
 
 impl HTTPHandler for RouteGroup<'_> {

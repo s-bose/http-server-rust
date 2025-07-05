@@ -1,13 +1,14 @@
-use crate::common::HttpMethod;
+use crate::common::{HttpMethod, join_path};
 use crate::request::{Request, RequestError};
 use crate::response::{HttpResponse, write_response};
-use crate::routing::{HTTPHandler, Route, RouteError, RouteResolver};
+use crate::router::RouteGroup;
+use crate::routing::{HTTPHandler, Handler, Route, RouteError, RouteResolver};
 
 use log::{error, info};
 use scoped_threadpool::Pool;
 use std::io::BufReader;
 use std::time::Duration;
-use std::{collections::HashMap, net::TcpListener, net::TcpStream};
+use std::{net::TcpListener, net::TcpStream};
 
 pub struct Server {
     ip_addr: String,
@@ -23,9 +24,37 @@ pub enum ServerError {
     ResponseError(std::io::Error),
 }
 
-impl RouteResolver for Server {
-    fn routes(&self) -> &Vec<Route> {
-        &self.routes
+impl RouteResolver for Server {}
+
+impl HTTPHandler for Server {
+    type Error = RouteError;
+
+    fn register_route(&mut self, path: &str, method: HttpMethod, handler: Handler) {
+        if let Some(matching_route_idx) = self
+            .routes
+            .iter()
+            .position(|r| r.path == path && r.method == method)
+        {
+            log::warn!(
+                "Route {:?} {:?} already exists and will be overwritten",
+                method,
+                path
+            );
+            self.routes.insert(
+                matching_route_idx,
+                Route {
+                    path: path.to_string(),
+                    method,
+                    handler,
+                },
+            );
+        } else {
+            self.routes.push(Route {
+                path: path.to_string(),
+                method,
+                handler,
+            });
+        }
     }
 }
 
@@ -96,15 +125,19 @@ impl Server {
             Ok(request) => request,
         };
 
-        let route = self.resolve(&request).unwrap();
-
-        let response = if method_not_allowed {
-            Ok(HttpResponse::method_not_allowed())
-        } else if let Some(handler) = self.routes.get(&route_key) {
-            handler(&request)
-        } else {
-            Ok(HttpResponse::not_found())
+        let route = match self.resolve(&request.path, request.method.clone(), &self.routes) {
+            Ok(route) => route,
+            Err(RouteError::MethodNotAllowed) => {
+                self.send_response(&mut stream, HttpResponse::method_not_allowed());
+                return;
+            }
+            Err(RouteError::NotFound) => {
+                self.send_response(&mut stream, HttpResponse::not_found());
+                return;
+            }
         };
+
+        let response = (route.handler)(&request);
 
         match response {
             Ok(response) => {
@@ -149,14 +182,16 @@ impl Server {
         }
     }
 
-    pub fn add_route(&mut self, method: HttpMethod, path: &str, handler: RouteHandler) {
-        let key: RouteKey = (method, path.to_string());
+    pub fn group<F>(&mut self, prefix: &str, config: F)
+    where
+        F: FnOnce(&mut RouteGroup),
+    {
+        let mut group = RouteGroup {
+            prefix: join_path("/", prefix),
+            routes: &mut self.routes,
+        };
 
-        if self.routes.contains_key(&key) {
-            println!("Route already exists: {:?}", key);
-        } else {
-            self.routes.insert(key, handler);
-        }
+        config(&mut group);
     }
 
     fn send_response(&self, stream: &mut TcpStream, response: HttpResponse) {
@@ -166,31 +201,7 @@ impl Server {
     }
 }
 
-impl HTTPHandler for Server {
-    type Error = RouteError;
-
-    fn register_route(&mut self, route: Route) -> Result<(), RouteError> {
-        if let Some(matching_route) = self
-            .routes
-            .iter()
-            .find(|r| r.path == route.path && r.method == route.method)
-        {
-            return Err(RouteError::RouteAlreadyExists(format!(
-                "Route already exists: {:?}",
-                matching_route.path
-            )));
-        }
-        self.routes.push(route);
-        Ok(())
-    }
-}
-
 impl Server {
-    /// Enhanced route resolution using the trait
-    pub fn resolve_request(&self, request: &Request) -> Option<RouteHandler> {
-        self.resolve(request)
-    }
-
     /// Get route parameters for a request
     pub fn get_route_params(&self, request: &Request) -> HashMap<String, String> {
         // Find the matching route pattern
@@ -202,5 +213,22 @@ impl Server {
             }
         }
         HashMap::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_server_group() {
+        let mut server = Server::new("127.0.0.1", 8080, None);
+        server.group("/api", |group| {
+            group.get("/users", |_| Ok(HttpResponse::ok()));
+        });
+
+        assert_eq!(server.routes.len(), 1);
+        assert_eq!(server.routes[0].path, "/api/users");
+        assert_eq!(server.routes[0].method, HttpMethod::GET);
     }
 }

@@ -15,7 +15,6 @@ pub struct Route {
 pub enum RouteError {
     NotFound,
     MethodNotAllowed,
-    RouteAlreadyExists,
 }
 
 pub fn match_route(route: &str, incoming: &str) -> bool {

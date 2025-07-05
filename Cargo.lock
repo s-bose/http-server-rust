@@ -288,6 +288,7 @@ dependencies = [
  "log",
  "num_cpus",
  "pretty_env_logger",
+ "regex",
  "scoped_threadpool",
  "serde",
  "serde_json",
