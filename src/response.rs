@@ -1,4 +1,5 @@
 use crate::constants::HTTP_VERSION;
+use chrono::{DateTime, Duration, Utc};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io::Result;
@@ -185,6 +186,53 @@ impl HttpResponse {
     pub fn with_cookie(self, cookie: &str) -> Self {
         let mut new_response = self;
         new_response.cookies.push(cookie.to_string());
+        new_response
+    }
+
+    pub fn set_cookie(
+        self,
+        key: &str,
+        value: &str,
+        samesite: &str,
+        http_only: bool,
+        secure: bool,
+        max_age: Option<u32>,
+        expires: Option<DateTime<Utc>>,
+    ) -> Self {
+        let mut new_response = self;
+        let mut cookie_str = format!("{}={}", key, value);
+        match samesite {
+            "Strict" | "Lax" | "None" => cookie_str.push_str(&format!("; SameSite={}", samesite)),
+            _ => {}
+        }
+
+        if let Some(max_age) = max_age {
+            cookie_str.push_str(&format!("; Max-Age={}", max_age));
+        } else {
+            cookie_str.push_str(&format!("; Max-Age={}", 60 * 60 * 24 * 30)); // 30 days
+        }
+
+        if let Some(expires) = expires {
+            cookie_str.push_str(&format!(
+                "; Expires={}",
+                expires.format("%a, %d %b %Y %H:%M:%S GMT")
+            ));
+        } else {
+            cookie_str.push_str(&format!(
+                "; Expires={}",
+                (Utc::now() + Duration::days(30)).format("%a, %d %b %Y %H:%M:%S GMT")
+            ));
+        }
+
+        if http_only {
+            cookie_str.push_str("; HttpOnly");
+        }
+
+        if secure {
+            cookie_str.push_str("; Secure");
+        }
+
+        new_response.cookies.push(cookie_str);
         new_response
     }
 

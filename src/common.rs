@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::str::FromStr;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -47,4 +48,27 @@ impl HttpMethod {
 }
 
 pub type RoutePath = String;
-pub type RouteKey = (HttpMethod, RoutePath);
+
+pub fn join_path<'a>(prefix: &'a str, path: &'a str) -> String {
+    Path::new(prefix)
+        .join(path.trim_start_matches('/'))
+        .to_string_lossy()
+        .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_join_path() {
+        assert_eq!(join_path("/api", "/v1/users"), "/api/v1/users");
+        assert_eq!(
+            join_path("/api", &join_path("/v1", "/users")),
+            "/api/v1/users"
+        );
+        assert_eq!(join_path("/api", "v1/users"), "/api/v1/users"); // path without leading slash
+        assert_eq!(join_path("/api", "v1/users/"), "/api/v1/users/"); // path with trailing slash
+        assert_eq!(join_path("api", "v1/users/"), "api/v1/users/");
+    }
+}
